@@ -8,6 +8,7 @@ import ErrorBanner from '@/components/ErrorBanner'
 import { createSession, updateSessionStatus, addTranscript, type Provider } from '@/lib/supabase'
 import { DEFAULT_PROMPT } from '@/lib/prompts'
 import { DEFAULT_RAG } from '@/lib/rag-content'
+import { useOpenAICall } from '@/hooks/useOpenAICall'
 
 type CallStatus = 'idle' | 'connecting' | 'active' | 'ended' | 'error'
 
@@ -31,6 +32,30 @@ export default function CallPage() {
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const sessionIdRef = useRef<string | null>(null)
 
+  const addTranscriptMessage = useCallback(
+    async (role: 'agent' | 'user', content: string) => {
+      const msg: TranscriptMessage = {
+        id: crypto.randomUUID(),
+        role,
+        content,
+        timestamp: new Date(),
+      }
+      setTranscripts((prev) => [...prev, msg])
+      if (sessionIdRef.current) {
+        await addTranscript(sessionIdRef.current, role, content).catch(console.error)
+      }
+    },
+    []
+  )
+
+  const openAICall = useOpenAICall({
+    onTranscript: addTranscriptMessage,
+    onError: (msg) => {
+      setError(msg)
+      setStatus('error')
+    },
+  })
+
   // Read config from localStorage
   useEffect(() => {
     const savedPrompt = localStorage.getItem('ct-system-prompt')
@@ -49,22 +74,6 @@ export default function CallPage() {
     }
     return () => { if (timerRef.current) clearInterval(timerRef.current) }
   }, [status])
-
-  const addTranscriptMessage = useCallback(
-    async (role: 'agent' | 'user', content: string) => {
-      const msg: TranscriptMessage = {
-        id: crypto.randomUUID(),
-        role,
-        content,
-        timestamp: new Date(),
-      }
-      setTranscripts((prev) => [...prev, msg])
-      if (sessionIdRef.current) {
-        await addTranscript(sessionIdRef.current, role, content).catch(console.error)
-      }
-    },
-    []
-  )
 
   async function handleStartCall() {
     setError(null)
@@ -120,11 +129,9 @@ export default function CallPage() {
     setShowRating(true)
   }
 
-  // ─── OpenAI Realtime (Phase 3) ───────────────────────────────────────────
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  async function startOpenAICall(_sid: string, _prompt: string, _rag: string) {
-    // TODO: Phase 3 – OpenAI WebRTC Integration
-    throw new Error('OpenAI Integration folgt in Phase 3')
+  // ─── OpenAI Realtime ─────────────────────────────────────────────────────
+  async function startOpenAICall(_sid: string, prompt: string, rag: string) {
+    await openAICall.start(prompt, rag)
   }
 
   // ─── ElevenLabs (Phase 4) ────────────────────────────────────────────────
@@ -135,7 +142,8 @@ export default function CallPage() {
   }
 
   function stopActiveCall() {
-    // TODO: Wird in Phase 3/4 befüllt – Provider-Verbindung trennen
+    if (provider === 'openai') openAICall.stop()
+    // ElevenLabs: Phase 4
   }
 
   const statusLabel: Record<CallStatus, string> = {

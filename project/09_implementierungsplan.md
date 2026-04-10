@@ -195,6 +195,27 @@ Referenz: https://developers.openai.com/api/docs/guides/realtime-webrtc
 6. Audio Output über <audio> Element abspielen
 ```
 
+### 3.2.1 Voice konfigurieren
+```
+Agent Name: Luca
+OpenAI Voice: "echo"
+
+Beim session.update mitgeben:
+{
+  type: "session.update",
+  session: {
+    voice: "echo",
+    instructions: "[System Prompt + RAG hier]",
+    input_audio_transcription: { model: "whisper-1" }
+  }
+}
+```
+
+Verfügbare OpenAI Voices zur Referenz:
+- Männlich: echo, onyx, fable, ash, verse
+- Weiblich: nova, shimmer, coral, sage
+- Neutral:  alloy, ballad
+
 ### 3.3 System Prompt & RAG senden
 ```
 Beim Erstellen der Session (NICHT über Data Channel):
