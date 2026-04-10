@@ -45,6 +45,11 @@ export function useOpenAICall({ onTranscript, onError }: OpenAICallCallbacks) {
     // 5. Data Channel für Events
     const dc = pc.createDataChannel('oai-events')
 
+    // Sobald Verbindung steht → Agent eröffnet das Gespräch
+    dc.onopen = () => {
+      dc.send(JSON.stringify({ type: 'response.create' }))
+    }
+
     dc.onmessage = (event) => {
       let msg: Record<string, unknown>
       try {
