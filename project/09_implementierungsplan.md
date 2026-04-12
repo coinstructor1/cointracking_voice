@@ -26,6 +26,7 @@ echo "y" | npx create-next-app@latest . --typescript --tailwind --app --src-dir 
 ```bash
 npm install @supabase/supabase-js
 npm install @elevenlabs/react
+npm install resend
 # OpenAI Realtime: kein npm-Paket nötig, nutzt native WebRTC APIs
 ```
 
@@ -41,6 +42,7 @@ ELEVENLABS_API_KEY=...
 NEXT_PUBLIC_SUPABASE_URL=...
 NEXT_PUBLIC_SUPABASE_ANON_KEY=...
 SUPABASE_SERVICE_ROLE_KEY=...
+RESEND_API_KEY=re_...
 ```
 
 ### 0.5 Vercel Projekt anlegen
@@ -153,6 +155,8 @@ src/app/
 │   │   └── route.ts      # Ephemeral Token für OpenAI WebRTC
 │   ├── elevenlabs-token/
 │   │   └── route.ts      # Signed URL für ElevenLabs
+│   ├── send-email/
+│   │   └── route.ts      # E-Mail versenden via Resend (Tool Call Handler)
 │   └── analyze-transcript/
 │       └── route.ts      # LLM-Auswertung nach Call-Ende
 ```
@@ -325,6 +329,185 @@ onMessage Callback liefert:
 
 ---
 
+## Phase 4.5 – Tool Calling & E-Mail (Tag 4)
+
+Ziel: Der Agent kann während des Gesprächs eigenständig eine E-Mail mit dem passenden Upgrade-Link an den Interessenten senden.
+
+**Flow:**
+```
+Agent erkennt Kaufinteresse
+→ fragt nach E-Mail-Adresse
+→ ruft Tool "send_upgrade_email" auf
+→ Next.js API Route schickt E-Mail via Resend
+→ Agent bestätigt dem User: "Ich hab dir gerade den Link geschickt!"
+```
+
+### 4.5.1 API Route: /api/send-email
+
+```ts
+// src/app/api/send-email/route.ts
+import { Resend } from 'resend';
+
+const resend = new Resend(process.env.RESEND_API_KEY);
+
+export async function POST(req: Request) {
+  const { recipient, plan_name, upgrade_url } = await req.json();
+
+  const { error } = await resend.emails.send({
+    from: 'Luca von CoinTracking <luca@deine-domain.com>',
+    to: recipient,
+    subject: `Dein CoinTracking ${plan_name} Upgrade-Link`,
+    html: `
+      <p>Hi,</p>
+      <p>wie besprochen – hier ist dein persönlicher Link zum <strong>${plan_name}</strong> Plan:</p>
+      <p><a href="${upgrade_url}">${upgrade_url}</a></p>
+      <p>Bei Fragen bin ich gerne für dich da.</p>
+      <p>Viele Grüße,<br/>Luca – CoinTracking</p>
+    `,
+  });
+
+  if (error) return Response.json({ error }, { status: 500 });
+  return Response.json({ success: true });
+}
+```
+
+> Resend Account anlegen: https://resend.com → Domain verifizieren → API Key holen
+
+### 4.5.2 Tool Schema (beide Provider nutzen dieselbe Definition)
+
+```ts
+// src/lib/tools.ts  ← shared Tool-Definition
+export const salesTools = [
+  {
+    name: 'send_upgrade_email',
+    description: 'Sendet dem Interessenten eine E-Mail mit dem Link zum gewählten CoinTracking Plan. Nur aufrufen wenn der User explizit zustimmt, eine E-Mail zu erhalten.',
+    parameters: {
+      type: 'object' as const,
+      properties: {
+        recipient: {
+          type: 'string',
+          description: 'E-Mail-Adresse des Interessenten',
+        },
+        plan_name: {
+          type: 'string',
+          description: 'Name des besprochenen Plans, z.B. "Pro", "Expert 20k", "Starter"',
+        },
+        upgrade_url: {
+          type: 'string',
+          description: 'URL zur Upgrade-Seite des Plans, z.B. https://cointracking.info/billing/',
+        },
+      },
+      required: ['recipient', 'plan_name', 'upgrade_url'],
+    },
+  },
+];
+```
+
+### 4.5.3 OpenAI: Tool registrieren + Event Handler
+
+**Tool beim Session-Start registrieren** (im `session.update` Event):
+```ts
+dataChannel.send(JSON.stringify({
+  type: 'session.update',
+  session: {
+    voice: 'echo',
+    instructions: systemPrompt + ragContent,
+    input_audio_transcription: { model: 'whisper-1' },
+    tools: salesTools.map(t => ({
+      type: 'function',
+      name: t.name,
+      description: t.description,
+      parameters: t.parameters,
+    })),
+    tool_choice: 'auto',
+  },
+}));
+```
+
+**Event Handler im Data Channel:**
+```ts
+dataChannel.onmessage = async (event) => {
+  const msg = JSON.parse(event.data);
+
+  // Tool Call abfangen
+  if (msg.type === 'response.function_call_arguments.done') {
+    const args = JSON.parse(msg.arguments);
+
+    if (msg.name === 'send_upgrade_email') {
+      // E-Mail versenden
+      await fetch('/api/send-email', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(args),
+      });
+
+      // Ergebnis an OpenAI zurückmelden (wichtig – sonst wartet der Agent)
+      dataChannel.send(JSON.stringify({
+        type: 'conversation.item.create',
+        item: {
+          type: 'function_call_output',
+          call_id: msg.call_id,
+          output: JSON.stringify({ success: true }),
+        },
+      }));
+
+      // Agent weitersprechen lassen
+      dataChannel.send(JSON.stringify({ type: 'response.create' }));
+
+      // UI Feedback
+      setEmailSent(true);
+    }
+  }
+
+  // Transkript-Events wie gehabt ...
+};
+```
+
+### 4.5.4 ElevenLabs: clientTools
+
+```tsx
+const conversation = useConversation({
+  clientTools: {
+    send_upgrade_email: async ({ recipient, plan_name, upgrade_url }) => {
+      await fetch('/api/send-email', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ recipient, plan_name, upgrade_url }),
+      });
+      setEmailSent(true);
+      return 'E-Mail erfolgreich gesendet.'; // Agent bekommt diesen Text als Tool-Ergebnis
+    },
+  },
+  onMessage: (msg) => { /* Transkript */ },
+  onError: (err) => { /* Error Handling */ },
+});
+```
+
+> Tool-Schema für ElevenLabs zusätzlich im ElevenLabs Dashboard beim Agent hinterlegen
+> (oder dynamisch über die API beim Session-Start übergeben).
+
+### 4.5.5 UI Feedback
+
+In `CallInterface.tsx` State `emailSent` anzeigen:
+```tsx
+{emailSent && (
+  <div className="email-sent-banner">
+    ✉️ Upgrade-Link wurde versendet!
+  </div>
+)}
+```
+
+### 4.5.6 Wichtiger Hinweis im System Prompt
+
+Im System Prompt ergänzen:
+```
+Wenn ein Interessent bereit ist, mehr zu erfahren oder einen Plan ausprobieren möchte,
+frage nach seiner E-Mail-Adresse und nutze dann das Tool "send_upgrade_email",
+um ihm den passenden Link zu schicken. Frag immer explizit um Erlaubnis, bevor du die E-Mail sendest.
+```
+
+---
+
 ## Phase 5 – Config & RAG UI (Tag 4)
 
 ### 5.1 System Prompt Editor
@@ -442,12 +625,13 @@ Trigger: Automatisch nach Call-Ende + Manuell per Button
 | 2 | UI Layout & Komponenten | 1 Tag |
 | 3 | OpenAI Realtime API Integration | 1.5 Tage |
 | 4 | ElevenLabs Integration | 1 Tag |
+| 4.5 | Tool Calling + E-Mail (Resend) | 0.5 Tag |
 | 5 | Config & RAG UI | 0.5 Tag |
 | 6 | Call-Bewertung | 0.5 Tag |
 | 7 | Error Handling | 0.5 Tag |
 | 8 | Auswertung & Analyse Dashboard | 1 Tag |
 | 9 | Deploy & Smoke Test | 0.5 Tag |
-| **Gesamt** | | **~7 Tage** |
+| **Gesamt** | | **~7.5 Tage** |
 
 ---
 
@@ -460,6 +644,8 @@ Trigger: Automatisch nach Call-Ende + Manuell per Button
 | ElevenLabs Next.js Guide | https://elevenlabs.io/docs/conversational-ai/guides/conversational-ai-guide-nextjs |
 | ElevenLabs React SDK | https://github.com/elevenlabs/packages |
 | Supabase JS Client | https://supabase.com/docs/reference/javascript |
+| Resend (E-Mail API) | https://resend.com/docs/introduction |
+| OpenAI Tool Calling (Realtime) | https://platform.openai.com/docs/guides/realtime#tool-calling |
 
 ---
 
@@ -471,6 +657,7 @@ Trigger: Automatisch nach Call-Ende + Manuell per Button
 3. "Baue die UI Komponenten: [Struktur aus Phase 2]"
 4. "Integriere OpenAI Realtime API mit WebRTC: [Details aus Phase 3]"
 5. "Integriere ElevenLabs mit @elevenlabs/react: [Details aus Phase 4]"
+5.5. "Implementiere Tool Calling + E-Mail via Resend für beide Provider: [Details aus Phase 4.5]"
 6. "Füge System Prompt + RAG Editor hinzu: [Details aus Phase 5]"
 7. "Füge Call-Bewertung hinzu (inkl. Szenario + Tester-Name): [Details aus Phase 6]"
 8. "Implementiere Error Handling: [Details aus Phase 7 + 08_error_handling.md]"

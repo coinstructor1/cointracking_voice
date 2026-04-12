@@ -199,6 +199,12 @@ export default function CallPage() {
     if (sessionIdRef.current) {
       await updateSessionStatus(sessionIdRef.current, 'completed').catch(console.error)
       await updateSessionEnd(sessionIdRef.current, { callDurationSeconds: duration }).catch(console.error)
+      // LLM-Auswertung im Hintergrund starten (fire-and-forget)
+      fetch('/api/analyze-transcript', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: sessionIdRef.current }),
+      }).catch(console.error)
     }
     setShowRating(true)
   }

@@ -38,6 +38,20 @@ export interface Transcript {
   timestamp: string
 }
 
+export interface TranscriptAnalysis {
+  id: string
+  session_id: string
+  summary: string | null
+  objections_raised: string[] | null
+  objections_handled: boolean | null
+  reached_closing: boolean | null
+  agent_errors: string[] | null
+  conversation_dropoff: string | null
+  highlight: string | null
+  overall_verdict: 'strong' | 'ok' | 'weak' | null
+  created_at: string
+}
+
 export interface Rating {
   id: string
   session_id: string
@@ -133,6 +147,22 @@ export async function getSessions(): Promise<Session[]> {
   const { data, error } = await supabase
     .from('sessions')
     .select('*')
+    .order('created_at', { ascending: false })
+
+  if (error) throw error
+  return data
+}
+
+export async function getAnalysisData() {
+  const { data, error } = await supabase
+    .from('sessions')
+    .select(`
+      id, created_at, provider, voice_id, agent_name, prompt_variant, model,
+      scenario, tester_name, call_duration_seconds, outcome,
+      ratings(naturalness, latency, conversation_flow, objection_handling, closing, errors, notes),
+      transcript_analysis(summary, overall_verdict, reached_closing, objections_raised, agent_errors)
+    `)
+    .eq('status', 'completed')
     .order('created_at', { ascending: false })
 
   if (error) throw error

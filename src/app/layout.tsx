@@ -38,6 +38,9 @@ export default function RootLayout({
             <Link href="/history" className="hover:text-white transition-colors">
               History
             </Link>
+            <Link href="/analysis" className="hover:text-white transition-colors">
+              Analyse
+            </Link>
           </nav>
         </header>
         <main className="flex-1 flex flex-col">{children}</main>
