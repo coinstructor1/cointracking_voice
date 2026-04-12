@@ -59,10 +59,18 @@ SUPABASE_SERVICE_ROLE_KEY=...
 create table sessions (
   id uuid primary key default gen_random_uuid(),
   created_at timestamptz default now(),
-  provider text not null, -- 'openai' | 'elevenlabs'
+  provider text not null,           -- 'openai' | 'elevenlabs'
+  voice_id text,                    -- z.B. 'echo', 'nova' (OpenAI) oder ElevenLabs Voice ID
+  agent_name text,                  -- z.B. 'Luca'
+  prompt_variant text,              -- 'v1_standard' | 'v2_aktiv' | 'v3_beratend' | 'custom'
+  scenario text,                    -- 'A_interessiert' | 'B_skeptiker' | 'C_preissensitiv' | 'D_vieltrader'
+  tester_name text,                 -- Wer hat getestet?
+  call_duration_seconds int,        -- Gesprächslänge
+  outcome text,                     -- 'interested' | 'declined' | 'followup' | 'aborted'
+  language text default 'de',       -- 'de' | 'en'
   system_prompt text,
   rag_content text,
-  status text default 'active' -- 'active' | 'completed' | 'error'
+  status text default 'active'      -- 'active' | 'completed' | 'error'
 );
 ```
 
@@ -93,20 +101,34 @@ create table ratings (
 );
 ```
 
+**transcript_analysis** (LLM-Auswertung nach Call)
+```sql
+create table transcript_analysis (
+  id uuid primary key default gen_random_uuid(),
+  session_id uuid references sessions(id),
+  summary text,
+  objections_raised text[],
+  objections_handled boolean,
+  reached_closing boolean,
+  agent_errors text[],
+  conversation_dropoff text,
+  highlight text,
+  overall_verdict text,             -- 'strong' | 'ok' | 'weak'
+  created_at timestamptz default now()
+);
+```
+
 ### Row Level Security (RLS)
 ```sql
--- MVP: Kein User-Auth, internes Testing-Tool
--- Daher: Public Read/Write über Anon Key, aber nur über die App erreichbar
--- Für Produktion später: Auth einbauen
-
 alter table sessions enable row level security;
 alter table transcripts enable row level security;
 alter table ratings enable row level security;
+alter table transcript_analysis enable row level security;
 
--- Policies: anon darf alles (MVP-Phase, nur internes Tool)
 create policy "anon_all_sessions" on sessions for all using (true);
 create policy "anon_all_transcripts" on transcripts for all using (true);
 create policy "anon_all_ratings" on ratings for all using (true);
+create policy "anon_all_analysis" on transcript_analysis for all using (true);
 ```
 > ⚠️ Für Produktion: RLS auf auth.uid() umstellen + Login-Flow einbauen.
 
@@ -124,11 +146,15 @@ src/app/
 │   └── page.tsx          # System Prompt + RAG Editor
 ├── history/
 │   └── page.tsx          # Vergangene Sessions + Ratings
+├── analysis/
+│   └── page.tsx          # Auswertungs-Dashboard
 ├── api/
 │   ├── openai-token/
 │   │   └── route.ts      # Ephemeral Token für OpenAI WebRTC
-│   └── elevenlabs-token/
-│       └── route.ts      # Signed URL für ElevenLabs
+│   ├── elevenlabs-token/
+│   │   └── route.ts      # Signed URL für ElevenLabs
+│   └── analyze-transcript/
+│       └── route.ts      # LLM-Auswertung nach Call-Ende
 ```
 
 ### UI Komponenten
@@ -141,7 +167,10 @@ src/components/
 ├── RagEditor.tsx          # Textarea / File Upload für RAG
 ├── RatingForm.tsx         # 1-5 Sterne × 6 Kriterien + Notizen
 ├── SessionHistory.tsx     # Liste vergangener Sessions
-└── ErrorBanner.tsx        # Fehler-Anzeige
+├── ErrorBanner.tsx        # Fehler-Anzeige
+├── AnalysisLeaderboard.tsx # Provider/Prompt/Voice Scores
+├── ObjectionChart.tsx     # Einwand-Häufigkeiten
+└── ErrorPatterns.tsx      # Häufigste Agent-Fehler
 ```
 
 ### Call-Screen Layout
@@ -350,7 +379,44 @@ Siehe `08_error_handling.md` – implementieren:
 
 ---
 
-## Phase 8 – Deploy & Test (Tag 5)
+## Phase 8 – Auswertung & Analyse (Tag 6)
+
+### 8.1 Session-Felder in Call-UI ergänzen
+Vor Call-Start muss der Tester angeben:
+- **Szenario** – Dropdown (A/B/C/D)
+- **Tester-Name** – Textfeld
+- Werden in `sessions` gespeichert
+
+### 8.2 API Route: LLM-Transkript-Auswertung
+```
+POST /api/analyze-transcript
+Input: { session_id }
+→ Transkript aus Supabase holen
+→ GPT-4o Auswertungs-Prompt schicken (siehe 11_auswertung.md)
+→ JSON-Antwort in transcript_analysis Tabelle speichern
+Trigger: Automatisch nach Call-Ende + Manuell per Button
+```
+
+### 8.3 Call-Ende Flow (erweiterter)
+```
+1. Call endet
+2. call_duration_seconds berechnen + speichern
+3. /api/analyze-transcript automatisch aufrufen
+4. Rating Form anzeigen (inkl. outcome Dropdown)
+5. Nach Rating Submit → zur Session History
+```
+
+### 8.4 Analyse-Dashboard (/analysis)
+- **Leaderboard:** Ø Score pro Provider / Prompt / Voice
+- **Szenario-Matrix:** Welche Kombination gewinnt pro Szenario?
+- **Einwand-Analyse:** Häufigste Einwände + Behandlungsrate
+- **Fehler-Patterns:** Häufigste Agent-Fehler
+- **CSV Export:** Button → Download aller Daten als .csv
+- Datenquelle: Supabase JOIN Query aus `11_auswertung.md`
+
+---
+
+## Phase 9 – Deploy & Test (Tag 6–7)
 
 ### 8.1 Vercel Deploy
 - `vercel deploy` oder Auto-Deploy via Git Push
@@ -372,15 +438,16 @@ Siehe `08_error_handling.md` – implementieren:
 | Phase | Was | Aufwand |
 |---|---|---|
 | 0 | Setup (Next.js, Supabase, Vercel, Env) | 0.5 Tag |
-| 1 | DB Schema | 0.5 Tag |
+| 1 | DB Schema (inkl. transcript_analysis) | 0.5 Tag |
 | 2 | UI Layout & Komponenten | 1 Tag |
 | 3 | OpenAI Realtime API Integration | 1.5 Tage |
 | 4 | ElevenLabs Integration | 1 Tag |
 | 5 | Config & RAG UI | 0.5 Tag |
 | 6 | Call-Bewertung | 0.5 Tag |
 | 7 | Error Handling | 0.5 Tag |
-| 8 | Deploy & Smoke Test | 0.5 Tag |
-| **Gesamt** | | **~6 Tage** |
+| 8 | Auswertung & Analyse Dashboard | 1 Tag |
+| 9 | Deploy & Smoke Test | 0.5 Tag |
+| **Gesamt** | | **~7 Tage** |
 
 ---
 
@@ -405,10 +472,11 @@ Siehe `08_error_handling.md` – implementieren:
 4. "Integriere OpenAI Realtime API mit WebRTC: [Details aus Phase 3]"
 5. "Integriere ElevenLabs mit @elevenlabs/react: [Details aus Phase 4]"
 6. "Füge System Prompt + RAG Editor hinzu: [Details aus Phase 5]"
-7. "Füge Call-Bewertung hinzu: [Details aus Phase 6]"
+7. "Füge Call-Bewertung hinzu (inkl. Szenario + Tester-Name): [Details aus Phase 6]"
 8. "Implementiere Error Handling: [Details aus Phase 7 + 08_error_handling.md]"
-9. "Deploy auf Vercel"
+9. "Baue Analyse-Dashboard + LLM-Auswertung + CSV Export: [Details aus Phase 8 + 11_auswertung.md]"
+10. "Deploy auf Vercel"
 ```
 
 Jeder Schritt kann als separater Claude Code Prompt gegeben werden.
-Alle .md Dateien (00–08) als Kontext mitgeben.
+Alle .md Dateien (00–11) als Kontext mitgeben.
