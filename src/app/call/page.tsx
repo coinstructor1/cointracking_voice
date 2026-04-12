@@ -5,7 +5,7 @@ import ProviderSelector from '@/components/ProviderSelector'
 import TranscriptView, { type TranscriptMessage } from '@/components/TranscriptView'
 import RatingForm from '@/components/RatingForm'
 import ErrorBanner from '@/components/ErrorBanner'
-import { createSession, updateSessionStatus, addTranscript, type Provider } from '@/lib/supabase'
+import { createSession, updateSessionStatus, updateSessionEnd, addTranscript, type Provider, type Scenario } from '@/lib/supabase'
 import { DEFAULT_PROMPT } from '@/lib/prompts'
 import { DEFAULT_RAG } from '@/lib/rag-content'
 import { DEFAULT_VOICE, DEFAULT_AGENT_NAME } from '@/lib/voices'
@@ -38,6 +38,8 @@ export default function CallPage() {
   const [openaiModel, setOpenaiModel] = useState(DEFAULT_MODEL)
   const [elevenlabsVoice, setElevenlabsVoice] = useState<string | null>(null)
   const [elevenlabsAgentId, setElevenlabsAgentId] = useState<string | null>(null)
+  const [scenario, setScenario] = useState<Scenario>('A_interessiert')
+  const [testerName, setTesterName] = useState('')
 
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const sessionIdRef = useRef<string | null>(null)
@@ -137,6 +139,8 @@ export default function CallPage() {
         agentName,
         promptVariant,
         model:         provider === 'openai' ? openaiModel : null,
+        scenario,
+        testerName:    testerName.trim() || null,
       })
       sid = session.id
       setSessionId(sid)
@@ -169,6 +173,7 @@ export default function CallPage() {
     setStatus('ended')
     if (sessionIdRef.current) {
       await updateSessionStatus(sessionIdRef.current, 'completed').catch(console.error)
+      await updateSessionEnd(sessionIdRef.current, { callDurationSeconds: duration }).catch(console.error)
     }
     setShowRating(true)
   }
@@ -268,6 +273,36 @@ export default function CallPage() {
           >
             🎙️
           </div>
+
+          {/* Pre-Call Config */}
+          {(status === 'idle' || status === 'error') && (
+            <div className="w-full grid grid-cols-2 gap-3">
+              <div className="flex flex-col gap-1">
+                <label className="text-xs text-ct-label font-medium uppercase tracking-wider">Deine Rolle im Test</label>
+                <select
+                  value={scenario}
+                  onChange={(e) => setScenario(e.target.value as Scenario)}
+                  className="rounded-lg border border-ct-border bg-ct-darkest px-3 py-2 text-sm text-white focus:border-ct-primary focus:outline-none"
+                >
+                  <option value="A_interessiert">A – Interessiert</option>
+                  <option value="B_skeptiker">B – Skeptiker</option>
+                  <option value="C_preissensitiv">C – Preissensitiv</option>
+                  <option value="D_vieltrader">D – Vieltrader</option>
+                </select>
+                <p className="text-xs text-ct-secondary">So verhältst du dich im Gespräch – nicht die AI.</p>
+              </div>
+              <div className="flex flex-col gap-1">
+                <label className="text-xs text-ct-label font-medium uppercase tracking-wider">Tester-Name</label>
+                <input
+                  type="text"
+                  value={testerName}
+                  onChange={(e) => setTesterName(e.target.value)}
+                  placeholder="Dein Name"
+                  className="rounded-lg border border-ct-border bg-ct-darkest px-3 py-2 text-sm text-white placeholder:text-ct-secondary focus:border-ct-primary focus:outline-none"
+                />
+              </div>
+            </div>
+          )}
 
           {/* Controls */}
           <div className="flex gap-3">

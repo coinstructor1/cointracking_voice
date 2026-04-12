@@ -10,6 +10,9 @@ export type Provider = 'openai' | 'elevenlabs'
 export type SessionStatus = 'active' | 'completed' | 'error'
 export type TranscriptRole = 'agent' | 'user'
 
+export type Scenario = 'A_interessiert' | 'B_skeptiker' | 'C_preissensitiv' | 'D_vieltrader'
+export type Outcome = 'interested' | 'declined' | 'followup' | 'aborted'
+
 export interface Session {
   id: string
   created_at: string
@@ -21,6 +24,10 @@ export interface Session {
   agent_name: string | null
   prompt_variant: string | null
   model: string | null
+  scenario: Scenario | null
+  tester_name: string | null
+  call_duration_seconds: number | null
+  outcome: Outcome | null
 }
 
 export interface Transcript {
@@ -52,6 +59,8 @@ export interface CreateSessionParams {
   agentName: string
   promptVariant: string
   model: string | null
+  scenario?: Scenario | null
+  testerName?: string | null
 }
 
 // DB helpers
@@ -66,6 +75,8 @@ export async function createSession(params: CreateSessionParams): Promise<Sessio
       agent_name:     params.agentName,
       prompt_variant: params.promptVariant,
       model:          params.model,
+      scenario:       params.scenario ?? null,
+      tester_name:    params.testerName ?? null,
     })
     .select()
     .single()
@@ -80,6 +91,18 @@ export async function updateSessionStatus(id: string, status: SessionStatus) {
     .update({ status })
     .eq('id', id)
 
+  if (error) throw error
+}
+
+export async function updateSessionEnd(
+  id: string,
+  fields: { callDurationSeconds?: number; outcome?: Outcome }
+) {
+  const update: Record<string, unknown> = {}
+  if (fields.callDurationSeconds !== undefined) update.call_duration_seconds = fields.callDurationSeconds
+  if (fields.outcome !== undefined) update.outcome = fields.outcome
+
+  const { error } = await supabase.from('sessions').update(update).eq('id', id)
   if (error) throw error
 }
 

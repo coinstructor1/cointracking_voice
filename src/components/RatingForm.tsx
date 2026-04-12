@@ -1,7 +1,7 @@
 'use client'
 
 import { useState } from 'react'
-import { saveRating } from '@/lib/supabase'
+import { saveRating, updateSessionEnd, type Outcome } from '@/lib/supabase'
 
 interface RatingFormProps {
   sessionId: string
@@ -30,13 +30,17 @@ export default function RatingForm({ sessionId, onSubmitted }: RatingFormProps) 
     errors: 3,
   })
   const [notes, setNotes] = useState('')
+  const [outcome, setOutcome] = useState<Outcome>('interested')
   const [saving, setSaving] = useState(false)
 
-  async function handleSubmit(e: React.FormEvent) {
+  async function handleSubmit(e: React.SyntheticEvent) {
     e.preventDefault()
     setSaving(true)
     try {
-      await saveRating(sessionId, { ...ratings, notes: notes || null })
+      await Promise.all([
+        saveRating(sessionId, { ...ratings, notes: notes || null }),
+        updateSessionEnd(sessionId, { outcome }),
+      ])
       onSubmitted()
     } catch (err) {
       console.error('Rating speichern fehlgeschlagen:', err)
@@ -76,6 +80,20 @@ export default function RatingForm({ sessionId, onSubmitted }: RatingFormProps) 
             </div>
           </div>
         ))}
+      </div>
+
+      <div className="space-y-1.5">
+        <label className="text-sm font-medium text-white">Gesprächsergebnis</label>
+        <select
+          value={outcome}
+          onChange={(e) => setOutcome(e.target.value as Outcome)}
+          className="w-full rounded-lg border border-ct-border bg-white/5 px-3 py-2 text-sm text-white focus:border-ct-primary focus:outline-none"
+        >
+          <option value="interested">Interessiert</option>
+          <option value="followup">Follow-up vereinbart</option>
+          <option value="declined">Abgelehnt</option>
+          <option value="aborted">Abgebrochen</option>
+        </select>
       </div>
 
       <div className="space-y-1.5">
