@@ -1,16 +1,7 @@
 import { Resend } from 'resend'
+import { normalizeEmail, EMAIL_REGEX } from '@/lib/email'
 
 const resend = new Resend(process.env.RESEND_API_KEY)
-
-const EMAIL_REGEX = /^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$/
-
-function normalizeUmlauts(email: string): string {
-  return email
-    .replace(/ä/g, 'ae').replace(/Ä/g, 'ae')
-    .replace(/ö/g, 'oe').replace(/Ö/g, 'oe')
-    .replace(/ü/g, 'ue').replace(/Ü/g, 'ue')
-    .replace(/ß/g, 'ss')
-}
 
 export async function POST(req: Request) {
   const body = await req.json()
@@ -29,7 +20,7 @@ export async function POST(req: Request) {
   }
 
   // Umlauts normalisieren (häufig bei deutscher Spracherkennung)
-  const recipient = normalizeUmlauts(rawRecipient.trim().toLowerCase())
+  const recipient = normalizeEmail(rawRecipient)
   if (recipient !== rawRecipient) {
     console.log(`[send-email] Normalized: "${rawRecipient}" → "${recipient}"`)
   }

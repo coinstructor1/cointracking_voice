@@ -1,14 +1,16 @@
 import { useRef } from 'react'
 import { salesTools } from '@/lib/tools'
+import { normalizeEmail } from '@/lib/email'
 
 interface OpenAICallCallbacks {
   onTranscript: (role: 'agent' | 'user', content: string) => void
   onError: (message: string) => void
   onDisconnect?: () => void
   onEmailSent?: () => void
+  onEmailConfirmRequest?: (normalizedEmail: string) => Promise<boolean>
 }
 
-export function useOpenAICall({ onTranscript, onError, onDisconnect, onEmailSent }: OpenAICallCallbacks) {
+export function useOpenAICall({ onTranscript, onError, onDisconnect, onEmailSent, onEmailConfirmRequest }: OpenAICallCallbacks) {
   const pcRef = useRef<RTCPeerConnection | null>(null)
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const agentBufferRef = useRef('')
@@ -103,13 +105,34 @@ export function useOpenAICall({ onTranscript, onError, onDisconnect, onEmailSent
       // Tool Call: send_upgrade_email
       if (type === 'response.function_call_arguments.done' && msg.name === 'send_upgrade_email') {
         const args = JSON.parse(msg.arguments as string)
-        console.log('[OpenAI Tool] send_upgrade_email called with:', args)
-        fetch('/api/send-email', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(args),
-        })
-          .then(async (res) => {
+        const normalized = normalizeEmail(args.recipient)
+        console.log('[OpenAI Tool] send_upgrade_email called with:', { ...args, normalized })
+
+        const sendEmail = async () => {
+          // User muss die normalisierte Email bestätigen
+          if (onEmailConfirmRequest) {
+            const confirmed = await onEmailConfirmRequest(normalized)
+            if (!confirmed) {
+              console.log('[OpenAI Tool] User rejected email:', normalized)
+              dc.send(JSON.stringify({
+                type: 'conversation.item.create',
+                item: {
+                  type: 'function_call_output',
+                  call_id: msg.call_id,
+                  output: JSON.stringify({ success: false, error: `Die angezeigte E-Mail-Adresse "${normalized}" wurde vom User als falsch markiert. Bitte frage nach der korrekten Adresse.` }),
+                },
+              }))
+              dc.send(JSON.stringify({ type: 'response.create' }))
+              return
+            }
+          }
+
+          try {
+            const res = await fetch('/api/send-email', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ ...args, recipient: normalized }),
+            })
             const data = await res.json()
             if (!res.ok || !data.success) {
               console.error('[OpenAI Tool] send-email API error:', data)
@@ -117,7 +140,6 @@ export function useOpenAICall({ onTranscript, onError, onDisconnect, onEmailSent
               console.log('[OpenAI Tool] Email sent OK:', data)
               onEmailSent?.()
             }
-            // Echtes Ergebnis an OpenAI zurückmelden
             dc.send(JSON.stringify({
               type: 'conversation.item.create',
               item: {
@@ -129,9 +151,7 @@ export function useOpenAICall({ onTranscript, onError, onDisconnect, onEmailSent
                 ),
               },
             }))
-            dc.send(JSON.stringify({ type: 'response.create' }))
-          })
-          .catch((err) => {
+          } catch (err) {
             console.error('[OpenAI Tool] fetch /api/send-email failed:', err)
             dc.send(JSON.stringify({
               type: 'conversation.item.create',
@@ -141,8 +161,11 @@ export function useOpenAICall({ onTranscript, onError, onDisconnect, onEmailSent
                 output: JSON.stringify({ success: false, error: 'Netzwerkfehler beim E-Mail-Versand.' }),
               },
             }))
-            dc.send(JSON.stringify({ type: 'response.create' }))
-          })
+          }
+          dc.send(JSON.stringify({ type: 'response.create' }))
+        }
+
+        sendEmail()
       }
 
       // Fehler vom Server

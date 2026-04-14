@@ -1,14 +1,16 @@
 import { useRef } from 'react'
 import { Conversation } from '@elevenlabs/client'
+import { normalizeEmail } from '@/lib/email'
 
 interface ElevenLabsCallCallbacks {
   onTranscript: (role: 'agent' | 'user', content: string) => void
   onError: (message: string) => void
   onDisconnect?: () => void
   onEmailSent?: () => void
+  onEmailConfirmRequest?: (normalizedEmail: string) => Promise<boolean>
 }
 
-export function useElevenLabsCall({ onTranscript, onError, onDisconnect, onEmailSent }: ElevenLabsCallCallbacks) {
+export function useElevenLabsCall({ onTranscript, onError, onDisconnect, onEmailSent, onEmailConfirmRequest }: ElevenLabsCallCallbacks) {
   const conversationRef = useRef<{ endSession: () => Promise<void> } | null>(null)
 
   async function start(agentId: string, systemPrompt: string, firstMessage?: string): Promise<void> {
@@ -41,11 +43,22 @@ export function useElevenLabsCall({ onTranscript, onError, onDisconnect, onEmail
           plan_name: string
           upgrade_url: string
         }) => {
-          console.log('[ElevenLabs Tool] send_upgrade_email called with:', { recipient, plan_name, upgrade_url })
+          const normalized = normalizeEmail(recipient)
+          console.log('[ElevenLabs Tool] send_upgrade_email called with:', { recipient, normalized, plan_name, upgrade_url })
+
+          // User muss die normalisierte Email bestätigen
+          if (onEmailConfirmRequest) {
+            const confirmed = await onEmailConfirmRequest(normalized)
+            if (!confirmed) {
+              console.log('[ElevenLabs Tool] User rejected email:', normalized)
+              return `Die angezeigte E-Mail-Adresse "${normalized}" wurde vom User als falsch markiert. Bitte frage nach der korrekten Adresse.`
+            }
+          }
+
           const res = await fetch('/api/send-email', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ recipient, plan_name, upgrade_url }),
+            body: JSON.stringify({ recipient: normalized, plan_name, upgrade_url }),
           })
           const data = await res.json()
           if (!res.ok || !data.success) {

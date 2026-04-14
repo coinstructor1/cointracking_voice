@@ -41,6 +41,7 @@ export default function CallPage() {
   const [scenario, setScenario] = useState<Scenario>('A_interessiert')
   const [testerName, setTesterName] = useState('')
   const [emailSent, setEmailSent] = useState(false)
+  const [emailConfirm, setEmailConfirm] = useState<{ email: string; resolve: (v: boolean) => void } | null>(null)
 
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const sessionIdRef = useRef<string | null>(null)
@@ -70,6 +71,12 @@ export default function CallPage() {
     }
   }
 
+  function requestEmailConfirm(normalizedEmail: string): Promise<boolean> {
+    return new Promise((resolve) => {
+      setEmailConfirm({ email: normalizedEmail, resolve })
+    })
+  }
+
   const openAICall = useOpenAICall({
     onTranscript: addTranscriptMessage,
     onError: (msg) => {
@@ -78,6 +85,7 @@ export default function CallPage() {
     },
     onDisconnect: handleUnexpectedDisconnect,
     onEmailSent: () => setEmailSent(true),
+    onEmailConfirmRequest: requestEmailConfirm,
   })
 
   const elevenlabsCall = useElevenLabsCall({
@@ -88,6 +96,7 @@ export default function CallPage() {
     },
     onDisconnect: handleUnexpectedDisconnect,
     onEmailSent: () => setEmailSent(true),
+    onEmailConfirmRequest: requestEmailConfirm,
   })
 
   // Read config from localStorage
@@ -132,6 +141,7 @@ export default function CallPage() {
     setTranscripts([])
     setDuration(0)
     setEmailSent(false)
+    setEmailConfirm(null)
     setStatus('connecting')
 
     // Browser WebRTC Support Check
@@ -383,6 +393,33 @@ export default function CallPage() {
               setTranscripts([])
             }}
           />
+        </div>
+      )}
+
+      {/* Email Confirmation Modal */}
+      {emailConfirm && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 px-4">
+          <div className="rounded-xl border border-ct-border bg-ct-dark p-6 max-w-sm w-full space-y-4 shadow-xl">
+            <div className="space-y-1">
+              <p className="text-xs font-medium uppercase tracking-wider text-ct-label">Agent möchte E-Mail senden</p>
+              <p className="text-white font-semibold text-lg">{emailConfirm.email}</p>
+              <p className="text-xs text-ct-secondary">Ist diese Adresse korrekt?</p>
+            </div>
+            <div className="flex gap-3">
+              <button
+                onClick={() => { emailConfirm.resolve(true); setEmailConfirm(null) }}
+                className="flex-1 rounded-lg bg-ct-primary hover:bg-ct-primary-hover text-white font-semibold py-2.5 text-sm transition-colors"
+              >
+                Ja, absenden
+              </button>
+              <button
+                onClick={() => { emailConfirm.resolve(false); setEmailConfirm(null) }}
+                className="flex-1 rounded-lg border border-ct-border text-ct-secondary hover:text-white hover:border-ct-primary py-2.5 text-sm transition-colors"
+              >
+                Nein, korrigieren
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
