@@ -40,6 +40,7 @@ export default function CallPage() {
   const [elevenlabsAgentId, setElevenlabsAgentId] = useState<string | null>(null)
   const [scenario, setScenario] = useState<Scenario>('A_interessiert')
   const [testerName, setTesterName] = useState('')
+  const [emailSent, setEmailSent] = useState(false)
 
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const sessionIdRef = useRef<string | null>(null)
@@ -76,6 +77,7 @@ export default function CallPage() {
       setStatus('error')
     },
     onDisconnect: handleUnexpectedDisconnect,
+    onEmailSent: () => setEmailSent(true),
   })
 
   const elevenlabsCall = useElevenLabsCall({
@@ -85,6 +87,7 @@ export default function CallPage() {
       setStatus('error')
     },
     onDisconnect: handleUnexpectedDisconnect,
+    onEmailSent: () => setEmailSent(true),
   })
 
   // Read config from localStorage
@@ -128,6 +131,7 @@ export default function CallPage() {
     setError(null)
     setTranscripts([])
     setDuration(0)
+    setEmailSent(false)
     setStatus('connecting')
 
     // Browser WebRTC Support Check
@@ -199,12 +203,6 @@ export default function CallPage() {
     if (sessionIdRef.current) {
       await updateSessionStatus(sessionIdRef.current, 'completed').catch(console.error)
       await updateSessionEnd(sessionIdRef.current, { callDurationSeconds: duration }).catch(console.error)
-      // LLM-Auswertung im Hintergrund starten (fire-and-forget)
-      fetch('/api/analyze-transcript', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session_id: sessionIdRef.current }),
-      }).catch(console.error)
     }
     setShowRating(true)
   }
@@ -304,6 +302,13 @@ export default function CallPage() {
           >
             🎙️
           </div>
+
+          {/* E-Mail gesendet Banner */}
+          {emailSent && (
+            <div className="w-full rounded-lg border border-ct-teal/40 bg-ct-teal/10 px-4 py-2 text-sm text-ct-teal text-center">
+              Upgrade-Link wurde versendet
+            </div>
+          )}
 
           {/* Pre-Call Config */}
           {(status === 'idle' || status === 'error') && (

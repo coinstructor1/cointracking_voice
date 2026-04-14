@@ -1,12 +1,14 @@
 import { useRef } from 'react'
+import { salesTools } from '@/lib/tools'
 
 interface OpenAICallCallbacks {
   onTranscript: (role: 'agent' | 'user', content: string) => void
   onError: (message: string) => void
   onDisconnect?: () => void
+  onEmailSent?: () => void
 }
 
-export function useOpenAICall({ onTranscript, onError, onDisconnect }: OpenAICallCallbacks) {
+export function useOpenAICall({ onTranscript, onError, onDisconnect, onEmailSent }: OpenAICallCallbacks) {
   const pcRef = useRef<RTCPeerConnection | null>(null)
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const agentBufferRef = useRef('')
@@ -53,8 +55,20 @@ export function useOpenAICall({ onTranscript, onError, onDisconnect }: OpenAICal
     // 5. Data Channel für Events
     const dc = pc.createDataChannel('oai-events')
 
-    // Sobald Verbindung steht → Agent eröffnet das Gespräch
+    // Sobald Verbindung steht → Session konfigurieren + Agent eröffnet das Gespräch
     dc.onopen = () => {
+      dc.send(JSON.stringify({
+        type: 'session.update',
+        session: {
+          tools: salesTools.map((t) => ({
+            type: 'function',
+            name: t.name,
+            description: t.description,
+            parameters: t.parameters,
+          })),
+          tool_choice: 'auto',
+        },
+      }))
       dc.send(JSON.stringify({ type: 'response.create' }))
     }
 
@@ -84,6 +98,51 @@ export function useOpenAICall({ onTranscript, onError, onDisconnect }: OpenAICal
       if (type === 'conversation.item.input_audio_transcription.completed') {
         const text = ((msg.transcript as string) ?? '').trim()
         if (text) onTranscript('user', text)
+      }
+
+      // Tool Call: send_upgrade_email
+      if (type === 'response.function_call_arguments.done' && msg.name === 'send_upgrade_email') {
+        const args = JSON.parse(msg.arguments as string)
+        console.log('[OpenAI Tool] send_upgrade_email called with:', args)
+        fetch('/api/send-email', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(args),
+        })
+          .then(async (res) => {
+            const data = await res.json()
+            if (!res.ok || !data.success) {
+              console.error('[OpenAI Tool] send-email API error:', data)
+            } else {
+              console.log('[OpenAI Tool] Email sent OK:', data)
+              onEmailSent?.()
+            }
+            // Echtes Ergebnis an OpenAI zurückmelden
+            dc.send(JSON.stringify({
+              type: 'conversation.item.create',
+              item: {
+                type: 'function_call_output',
+                call_id: msg.call_id,
+                output: JSON.stringify(data.success
+                  ? { success: true, recipient: data.recipient }
+                  : { success: false, error: data.error }
+                ),
+              },
+            }))
+            dc.send(JSON.stringify({ type: 'response.create' }))
+          })
+          .catch((err) => {
+            console.error('[OpenAI Tool] fetch /api/send-email failed:', err)
+            dc.send(JSON.stringify({
+              type: 'conversation.item.create',
+              item: {
+                type: 'function_call_output',
+                call_id: msg.call_id,
+                output: JSON.stringify({ success: false, error: 'Netzwerkfehler beim E-Mail-Versand.' }),
+              },
+            }))
+            dc.send(JSON.stringify({ type: 'response.create' }))
+          })
       }
 
       // Fehler vom Server

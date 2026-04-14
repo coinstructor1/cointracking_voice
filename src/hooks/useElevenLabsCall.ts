@@ -5,9 +5,10 @@ interface ElevenLabsCallCallbacks {
   onTranscript: (role: 'agent' | 'user', content: string) => void
   onError: (message: string) => void
   onDisconnect?: () => void
+  onEmailSent?: () => void
 }
 
-export function useElevenLabsCall({ onTranscript, onError, onDisconnect }: ElevenLabsCallCallbacks) {
+export function useElevenLabsCall({ onTranscript, onError, onDisconnect, onEmailSent }: ElevenLabsCallCallbacks) {
   const conversationRef = useRef<{ endSession: () => Promise<void> } | null>(null)
 
   async function start(agentId: string, systemPrompt: string, firstMessage?: string): Promise<void> {
@@ -32,6 +33,28 @@ export function useElevenLabsCall({ onTranscript, onError, onDisconnect }: Eleve
         agent: {
           prompt: { prompt: systemPrompt },
           ...(firstMessage ? { firstMessage } : {}),
+        },
+      },
+      clientTools: {
+        send_upgrade_email: async ({ recipient, plan_name, upgrade_url }: {
+          recipient: string
+          plan_name: string
+          upgrade_url: string
+        }) => {
+          console.log('[ElevenLabs Tool] send_upgrade_email called with:', { recipient, plan_name, upgrade_url })
+          const res = await fetch('/api/send-email', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ recipient, plan_name, upgrade_url }),
+          })
+          const data = await res.json()
+          if (!res.ok || !data.success) {
+            console.error('[ElevenLabs Tool] send-email API error:', data)
+            return data.error ?? 'E-Mail konnte nicht gesendet werden.'
+          }
+          console.log('[ElevenLabs Tool] Email sent OK:', data)
+          onEmailSent?.()
+          return `E-Mail erfolgreich gesendet an ${data.recipient}.`
         },
       },
       onMessage: ({ message, role }) => {

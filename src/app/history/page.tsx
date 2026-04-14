@@ -8,6 +8,7 @@ type Provider = 'all' | 'openai' | 'elevenlabs'
 interface SessionWithDetails extends Session {
   transcripts: Transcript[]
   rating: Rating | null
+  hasAnalysis: boolean
 }
 
 const RATING_LABELS: Record<string, string> = {
@@ -60,13 +61,29 @@ function StatusDot({ status }: { status: string }) {
 
 function SessionCard({ session }: { session: SessionWithDetails }) {
   const [expanded, setExpanded] = useState(false)
+  const [analyzing, setAnalyzing] = useState(false)
+  const [analyzed, setAnalyzed] = useState(session.hasAnalysis)
+
+  async function handleAnalyze() {
+    setAnalyzing(true)
+    try {
+      const res = await fetch('/api/analyze-transcript', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: session.id }),
+      })
+      if (res.ok) setAnalyzed(true)
+    } finally {
+      setAnalyzing(false)
+    }
+  }
 
   return (
     <div className="rounded-xl border border-ct-border bg-ct-dark overflow-hidden">
       {/* Header */}
-      <button
+      <div
         onClick={() => setExpanded((v) => !v)}
-        className="w-full flex items-center gap-4 px-5 py-4 text-left hover:bg-white/5 transition-colors"
+        className="w-full flex items-center gap-4 px-5 py-4 text-left hover:bg-white/5 transition-colors cursor-pointer"
       >
         <StatusDot status={session.status} />
 
@@ -95,10 +112,25 @@ function SessionCard({ session }: { session: SessionWithDetails }) {
           </p>
         </div>
 
-        <span className="text-ct-label text-sm shrink-0">
-          {expanded ? '▲' : '▼'}
-        </span>
-      </button>
+        <div className="flex items-center gap-2 shrink-0">
+          {analyzed ? (
+            <span className="text-xs text-ct-teal border border-ct-teal/30 px-2 py-0.5 rounded">
+              Analysiert
+            </span>
+          ) : (
+            <button
+              onClick={(e) => { e.stopPropagation(); handleAnalyze() }}
+              disabled={analyzing}
+              className="text-xs border border-ct-border px-2 py-0.5 rounded text-ct-secondary hover:text-white hover:border-ct-primary transition-colors disabled:opacity-40"
+            >
+              {analyzing ? 'Läuft...' : 'Analysieren'}
+            </button>
+          )}
+          <span className="text-ct-label text-sm">
+            {expanded ? '▲' : '▼'}
+          </span>
+        </div>
+      </div>
 
       {/* Expanded Content */}
       {expanded && (
@@ -188,14 +220,16 @@ export default function HistoryPage() {
 
       const detailed = await Promise.all(
         sessionData.map(async (s: Session) => {
-          const [{ data: transcripts }, { data: rating }] = await Promise.all([
+          const [{ data: transcripts }, { data: rating }, { data: analysis }] = await Promise.all([
             supabase.from('transcripts').select('*').eq('session_id', s.id).order('timestamp'),
             supabase.from('ratings').select('*').eq('session_id', s.id).maybeSingle(),
+            supabase.from('transcript_analysis').select('id').eq('session_id', s.id).maybeSingle(),
           ])
           return {
             ...s,
             transcripts: (transcripts ?? []) as Transcript[],
             rating: (rating ?? null) as Rating | null,
+            hasAnalysis: !!analysis,
           }
         })
       )
