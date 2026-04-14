@@ -27,6 +27,7 @@ Regeln:
 
 export async function POST(req: NextRequest) {
   const { session_id } = await req.json()
+  console.log('[analyze-transcript] Start for session:', session_id)
 
   if (!session_id) {
     return Response.json({ error: 'session_id fehlt' }, { status: 400 })
@@ -39,15 +40,24 @@ export async function POST(req: NextRequest) {
     .eq('session_id', session_id)
     .order('timestamp')
 
-  if (fetchError || !transcripts?.length) {
+  if (fetchError) {
+    console.error('[analyze-transcript] Supabase fetch error:', fetchError)
+    return Response.json({ error: 'Supabase-Fehler beim Laden der Transkripte' }, { status: 500 })
+  }
+
+  if (!transcripts?.length) {
+    console.warn('[analyze-transcript] No transcripts found for session:', session_id)
     return Response.json({ error: 'Keine Transkripte gefunden' }, { status: 404 })
   }
+
+  console.log('[analyze-transcript] Transcripts loaded:', transcripts.length, 'messages')
 
   const transcriptText = transcripts
     .map((t) => `${t.role === 'agent' ? 'Agent' : 'Kunde'}: ${t.content}`)
     .join('\n')
 
   // GPT-4o Auswertung
+  console.log('[analyze-transcript] Calling OpenAI GPT-4o...')
   const llmRes = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
     headers: {
@@ -57,51 +67,53 @@ export async function POST(req: NextRequest) {
     body: JSON.stringify({
       model: 'gpt-4o',
       response_format: { type: 'json_object' },
-      messages: [
-        {
-          role: 'user',
-          content: ANALYSIS_PROMPT.replace('[TRANSKRIPT]', transcriptText),
-        },
-      ],
+      messages: [{ role: 'user', content: ANALYSIS_PROMPT.replace('[TRANSKRIPT]', transcriptText) }],
     }),
   })
 
   if (!llmRes.ok) {
-    return Response.json({ error: 'LLM-Auswertung fehlgeschlagen' }, { status: 500 })
+    const errText = await llmRes.text()
+    console.error('[analyze-transcript] OpenAI error:', llmRes.status, errText)
+    return Response.json({ error: `LLM-Auswertung fehlgeschlagen: ${llmRes.status}` }, { status: 500 })
   }
 
   const llmData = await llmRes.json()
+  console.log('[analyze-transcript] OpenAI response received')
 
   let analysis: Record<string, unknown>
   try {
     analysis = JSON.parse(llmData.choices[0].message.content)
-  } catch {
+    console.log('[analyze-transcript] Parsed analysis:', analysis)
+  } catch (e) {
+    console.error('[analyze-transcript] JSON parse error:', e, 'Raw:', llmData.choices?.[0]?.message?.content)
     return Response.json({ error: 'LLM-Antwort konnte nicht geparst werden' }, { status: 500 })
   }
 
-  // In transcript_analysis speichern
+  // Evtl. vorhandene Analyse löschen (re-analyse support)
+  await supabase.from('transcript_analysis').delete().eq('session_id', session_id)
+
+  // Neue Analyse speichern
   const { data: saved, error: saveError } = await supabase
     .from('transcript_analysis')
-    .upsert(
-      {
-        session_id,
-        summary: analysis.summary ?? null,
-        objections_raised: analysis.objections ?? [],
-        objections_handled: analysis.objections_handled ?? null,
-        reached_closing: analysis.reached_closing ?? null,
-        agent_errors: analysis.errors ?? [],
-        conversation_dropoff: analysis.dropoff ?? null,
-        highlight: analysis.highlight ?? null,
-        overall_verdict: analysis.verdict ?? null,
-      },
-      { onConflict: 'session_id' }
-    )
+    .insert({
+      session_id,
+      summary:              analysis.summary ?? null,
+      objections_raised:    analysis.objections ?? [],
+      objections_handled:   analysis.objections_handled ?? null,
+      reached_closing:      analysis.reached_closing ?? null,
+      agent_errors:         analysis.errors ?? [],
+      conversation_dropoff: analysis.dropoff ?? null,
+      highlight:            analysis.highlight ?? null,
+      overall_verdict:      analysis.verdict ?? null,
+    })
     .select()
     .single()
 
   if (saveError) {
-    return Response.json({ error: 'Speichern fehlgeschlagen' }, { status: 500 })
+    console.error('[analyze-transcript] Supabase save error:', saveError)
+    return Response.json({ error: 'Speichern fehlgeschlagen', detail: saveError.message }, { status: 500 })
   }
 
+  console.log('[analyze-transcript] Saved successfully:', saved?.id)
   return Response.json(saved)
 }
